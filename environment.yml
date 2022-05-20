@@ -1,0 +1,15 @@
+name: EdgePhotometry
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - numpyro
+  - arviz
+  - pandas
+  - python=3
+  - astropy
+  - numpy
+  - scipy
+  - jupyterlab
+  - seaborn
+prefix: /Users/wfarr/miniconda3/envs/EdgePhotometry
