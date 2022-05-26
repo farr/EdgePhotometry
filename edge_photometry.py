@@ -39,6 +39,14 @@ The vector :math:`\vec{c}` plays the role of a "color correction" to the
 limiting magnitude in the 0th photometry band (which is singled out relative to
 the other bands in the limiting magnitude :math:`e`).  
 
+In fact, the code is a bit more sophisticated than this, and works with
+"centered" colors, so that 
+
+.. math::
+    A_0 + \vec{c} \cdot \left( \vec{C} - \vec{C}_\mathrm{center} \right) \geq e_\mathrm{center}
+
+is the edge.  The model outputs both :math:`e` and :math:`e_\mathrm{center}`.
+
 We imagine that the population with the edge follows a multivariate Gaussian
 with mean :math:`\vec{\mu}` and covariance :math:`\mathbf{\Sigma}` up to the
 edge: 
@@ -151,14 +159,20 @@ whence
     \end{cases} 
 """
 
-__all__ = ['edge_model']
+__all__ = ['edge_model', 'jax_prng_key']
 
 from jax import custom_jvp
+import jax
 import jax.numpy as jnp
 import jax.scipy.special as jss
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
+
+def jax_prng_key(seed=None):
+    if seed is None:
+        seed = np.random.randint(1<<32)
+    return jax.random.PRNGKey(seed)
 
 @custom_jvp
 def log1p_erf(x):
@@ -186,7 +200,7 @@ def log_edge_normalization_factor(e, mu_e, sigma_e, e_obs, sigma_e_obs):
 
     return log_numer - log_denom
 
-def edge_model(Aobs, sigma_obs, f_bg_prior=0.1, f_bg_confidence=10, e_mu=0.0, e_sigma=1.0, c_mu=None, c_sigma=None, mu_bg=None, cov_bg=None, f_bg=None):
+def edge_model(Aobs, sigma_obs, f_bg_prior=0.1, f_bg_confidence=10, e_center_mu=0.0, e_center_sigma=1.0, c_mu=None, c_sigma=None, c_center=None, mu_bg=None, cov_bg=None, f_bg=None):
     Aobs = np.array(Aobs)
     sigma_obs = np.array(sigma_obs)
 
@@ -206,13 +220,19 @@ def edge_model(Aobs, sigma_obs, f_bg_prior=0.1, f_bg_confidence=10, e_mu=0.0, e_
         c_mu = np.zeros(nband-1)
     if c_sigma is None:
         c_sigma = np.zeros(nband-1)
+    if c_center is None:
+        c_center = np.zeros(nband-1)
 
     c_unit = numpyro.sample('c_unit', dist.Normal(loc=0, scale=1), sample_shape=(nband-1,))
     c = numpyro.deterministic('c', c_mu + c_sigma*c_unit)
-    w = numpyro.deterministic('w', jnp.concatenate((jnp.array([1-c[0]]), -jnp.diff(c), jnp.array([c[-1]]))))
+    if nband == 2:
+        w = numpyro.deterministic('w', jnp.array([1-c[0], c[0]]))
+    else:
+        w = numpyro.deterministic('w', jnp.concatenate((jnp.array([1-c[0]]), -jnp.diff(c), jnp.array([c[-1]]))))
 
     e_unit = numpyro.sample('e_unit', dist.Normal(loc=0, scale=1))
-    e = numpyro.deterministic('e', e_mu + e_sigma*e_unit)
+    e_centered = numpyro.deterministic('e_centered', e_center_mu + e_center_sigma*e_unit)
+    e = numpyro.deterministic('e', e_centered + jnp.dot(c, c_center))
 
     mu_fg_offset = numpyro.sample('mu_fg_offset', dist.Normal(loc=0, scale=1), sample_shape=(nband,))
     mu_fg = numpyro.deterministic('mu_fg', mu_fg_offset + A_mu)
