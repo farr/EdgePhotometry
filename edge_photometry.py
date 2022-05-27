@@ -248,6 +248,8 @@ def edge_model(Aobs, sigma_obs, f_bg_prior=0.1, f_bg_confidence=10, e_center_mu=
         corr_bg_cholesky = numpyro.sample('corr_bg_cholesky', dist.LKJCholesky(nband, 3))
         cov_bg_cholesky = numpyro.deterministic('cov_bg_cholesky', scale_bg[:,None]*corr_bg_cholesky)
         cov_bg = numpyro.deterministic('cov_bg', jnp.matmul(cov_bg_cholesky, cov_bg_cholesky.T))
+    elif mu_bg is None or cov_bg is None:
+        raise ValueError('either both `mu_bg` and `cov_bg` must be `None` or neither can be `None`')
 
     mu_e = jnp.dot(w, mu_fg)
     e_obs = jnp.dot(Aobs, w)
