@@ -200,7 +200,7 @@ def log_edge_normalization_factor(e, mu_e, sigma_e, e_obs, sigma_e_obs):
 
     return log_numer - log_denom
 
-def edge_model(Aobs, sigma_obs, f_bg_prior=0.1, f_bg_confidence=10, e_center_mu=0.0, e_center_sigma=1.0, c_mu=None, c_sigma=None, c_center=None, mu_bg=None, cov_bg=None, f_bg=None):
+def edge_model(Aobs, sigma_obs, A0_cut, e_center_mu=0.0, e_center_sigma=1.0, c_mu=None, c_sigma=None, c_center=None, mu_bg=None, cov_bg=None, f_bg=None):
     Aobs = np.array(Aobs)
     sigma_obs = np.array(sigma_obs)
 
@@ -260,10 +260,25 @@ def edge_model(Aobs, sigma_obs, f_bg_prior=0.1, f_bg_confidence=10, e_center_mu=
 
     log_alpha = numpyro.deterministic('log_alpha', log_edge_normalization_factor(e, mu_e, sigma_e, e_obs, sigma_e_obs))
 
-    logp_fg = numpyro.deterministic('logp_fg', jnp.log1p(-f_bg) + dist.MultivariateNormal(loc=mu_fg[None,:], covariance_matrix=cov_fg[None,:,:]+cov_obs).log_prob(Aobs) + log_alpha)
-    logp_bg = numpyro.deterministic('logp_bg', jnp.log(f_bg) + dist.MultivariateNormal(loc=mu_bg[None,:], covariance_matrix=cov_bg[None,:,:]+cov_obs).log_prob(Aobs))
+    cov_fg_obs = cov_fg[None,:,:]+cov_obs
+    cov_bg_obs = cov_bg[None,:,:]+cov_obs
+
+    mu_A0_fg = mu_fg[0]
+    mu_A0_bg = mu_bg[0]
+    sigma_A0_fg = jnp.sqrt(cov_fg_obs[:,0,0])
+    sigma_A0_bg = jnp.sqrt(cov_bg_obs[:,0,0])
+
+    log_norm_fg = jnp.log(0.5) + log1p_erf((A0_cut - mu_A0_fg)/(jnp.sqrt(2)*sigma_A0_fg))
+    log_norm_bg = jnp.log(0.5) + log1p_erf((A0_cut - mu_A0_bg)/(jnp.sqrt(2)*sigma_A0_bg))
+
+    log_f_fg = jnp.log1p(-f_bg)
+    log_f_bg = jnp.log(f_bg)
+
+    logp_fg = numpyro.deterministic('logp_fg', log_f_fg + dist.MultivariateNormal(loc=mu_fg[None,:], covariance_matrix=cov_fg_obs).log_prob(Aobs) + log_alpha)
+    logp_bg = numpyro.deterministic('logp_bg', log_f_bg + dist.MultivariateNormal(loc=mu_bg[None,:], covariance_matrix=cov_bg_obs).log_prob(Aobs))
     logp_total = jnp.logaddexp(logp_fg, logp_bg)
     
     log_fg_prob = numpyro.deterministic('log_fg_prob', logp_fg - logp_total)
 
     numpyro.factor("likelihood", jnp.sum(logp_total))
+    numpyro.factor("selection", -jnp.sum(jnp.logaddexp(log_f_fg + log_norm_fg, log_f_bg + log_norm_bg)))
