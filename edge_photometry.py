@@ -208,6 +208,7 @@ def edge_model(Aobs, sigma_obs, A0_cut, e_center_mu=0.0, e_center_sigma=1.0, c_m
     assert sigma_obs.shape == (nobs, nband), 'size mismatch between `Aobs` and `sigma_obs`'
 
     A_mu = np.mean(Aobs, axis=0)
+    sigma_A = np.std(Aobs, axis=0)
 
     cov_obs = np.zeros((nobs, nband, nband))
     j,k = np.diag_indices(nband)
@@ -234,17 +235,19 @@ def edge_model(Aobs, sigma_obs, A0_cut, e_center_mu=0.0, e_center_sigma=1.0, c_m
     e_centered = numpyro.deterministic('e_centered', e_center_mu + e_center_sigma*e_unit)
     e = numpyro.deterministic('e', e_centered + jnp.dot(c, c_center))
 
-    mu_fg_offset = numpyro.sample('mu_fg_offset', dist.Normal(loc=0, scale=1), sample_shape=(nband,))
-    mu_fg = numpyro.deterministic('mu_fg', mu_fg_offset + A_mu)
-    scale_fg = numpyro.sample('scale_fg', dist.HalfNormal(scale=1), sample_shape=(nband,))
+    mu_fg_unit = numpyro.sample('mu_fg_unit', dist.Normal(loc=0, scale=1), sample_shape=(nband,))
+    mu_fg = numpyro.deterministic('mu_fg', mu_fg_unit*sigma_A + A_mu)
+    scale_fg_unit = numpyro.sample('scale_fg_unit', dist.HalfNormal(scale=1), sample_shape=(nband,))
+    scale_fg = numpyro.deterministic('scale_fg', scale_fg_unit*sigma_A)
     corr_fg_cholesky = numpyro.sample('corr_fg_cholesky', dist.LKJCholesky(nband, 3))
     cov_fg_cholesky = numpyro.deterministic('cov_fg_cholesky', scale_fg[:,None]*corr_fg_cholesky)
     cov_fg = numpyro.deterministic('cov_fg', jnp.matmul(cov_fg_cholesky, cov_fg_cholesky.T))
 
     if mu_bg is None and cov_bg is None:
-        mu_bg_offset = numpyro.sample('mu_bg_offset', dist.Normal(loc=0, scale=1), sample_shape=(nband,))
-        mu_bg = numpyro.deterministic('mu_bg', mu_bg_offset + A_mu)
-        scale_bg = numpyro.sample('scale_bg', dist.HalfNormal(scale=1), sample_shape=(nband,))
+        mu_bg_unit = numpyro.sample('mu_bg_offset', dist.Normal(loc=0, scale=1), sample_shape=(nband,))
+        mu_bg = numpyro.deterministic('mu_bg', mu_bg_unit*sigma_A + A_mu)
+        scale_bg_unit = numpyro.sample('scale_bg_unit', dist.HalfNormal(scale=1), sample_shape=(nband,))
+        scale_bg = numpyro.deterministic('scale_bg', scale_bg_unit*sigma_A)
         corr_bg_cholesky = numpyro.sample('corr_bg_cholesky', dist.LKJCholesky(nband, 3))
         cov_bg_cholesky = numpyro.deterministic('cov_bg_cholesky', scale_bg[:,None]*corr_bg_cholesky)
         cov_bg = numpyro.deterministic('cov_bg', jnp.matmul(cov_bg_cholesky, cov_bg_cholesky.T))
