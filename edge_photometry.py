@@ -177,15 +177,15 @@ def jax_prng_key(seed=None):
 @custom_jvp
 def log1p_erf(x):
     x = jnp.array(x)
-    return jnp.where(x < -3.0, -x*x - jnp.log(-jnp.sqrt(np.pi)*x) - 0.5/(x*x), jnp.log1p(jss.erf(x)))
+    return jnp.where(x < -4.0, -x*x - jnp.log(-jnp.sqrt(np.pi)*x) + 1/(x*x)*(-0.5 + 1/(x*x)*(5.0/8.0 - 37.0/(24.0*x*x))), jnp.log1p(jss.erf(x)))
 
 @log1p_erf.defjvp
 def log1p_erf_jvp(primals, tangents):
     x, = primals
     dx, = tangents
 
-    ans = jnp.where(x < -3.0, -x*x - jnp.log(-jnp.sqrt(np.pi)*x) - 0.5/(x*x), jnp.log1p(jss.erf(x)))
-    ans_dot = jnp.where(x < -3.0, -2*x - 1/x + 1/(x*x*x), 2/jnp.sqrt(np.pi)*jnp.exp(-x*x)/(1 + jss.erf(x)))
+    ans = jnp.where(x < -4.0, -x*x - jnp.log(-jnp.sqrt(np.pi)*x) + 1/(x*x)*(-0.5 + 1/(x*x)*(5.0/8.0 - 37.0/(24.0*x*x))), jnp.log1p(jss.erf(x)))
+    ans_dot = jnp.where(x < -4.0, -2*x + 1/x*(-1 + 1/(x*x)*(1 + 1/(x*x)*(-5.0/2.0 + 37.0/(4.0*x*x)))), 2/jnp.sqrt(np.pi)*jnp.exp(-x*x)/(1 + jss.erf(x)))
     return ans, ans_dot*dx
 
 def log_edge_normalization_factor(e, mu_e, sigma_e, e_obs, sigma_e_obs):
@@ -200,19 +200,33 @@ def log_edge_normalization_factor(e, mu_e, sigma_e, e_obs, sigma_e_obs):
 
     return log_numer - log_denom
 
-def edge_model(Aobs, sigma_obs, e_center_mu=0.0, e_center_sigma=1.0, c_mu=None, c_sigma=None, c_center=None, mu_bg=None, cov_bg=None, f_bg=None):
+def mean_sample(postfix, mean_vec, scale_vec):
+    N = mean_vec.shape[0]
+    mu_unit = numpyro.sample('mu_unit_' + postfix, dist.Normal(loc=0, scale=1), sample_shape=(N,))
+    mu = numpyro.deterministic('mu_' + postfix, mean_vec + scale_vec*mu_unit)
+
+    return mu, mu_unit
+
+def covariance_sample(postfix, scale_vec, eta=1):
+    N = scale_vec.shape[0]
+
+    scale_unit = numpyro.sample('scale_unit_' + postfix, dist.HalfNormal(scale=1), sample_shape=(N,))
+    scale = numpyro.deterministic('scale_' + postfix, scale_unit * scale_vec)
+    corr_cholesky = numpyro.sample('corr_cholesky_' + postfix, dist.LKJCholesky(N, eta))
+    cov_cholesky = numpyro.deterministic('cov_cholesky_' + postfix, scale[:,None]*corr_cholesky)
+    cov = numpyro.deterministic('cov_' + postfix, jnp.matmul(cov_cholesky, cov_cholesky.T))
+
+    return cov, cov_cholesky, corr_cholesky, scale, scale_unit
+
+def edge_model(Aobs, cov_obs, e_center_mu=0.0, e_center_sigma=1.0, c_mu=None, c_sigma=None, c_center=None, mu_bg=None, cov_bg=None, f_bg=None, nu_lkj=1):
     Aobs = np.array(Aobs)
-    sigma_obs = np.array(sigma_obs)
+    cov_obs = np.array(cov_obs)
 
     nobs, nband = Aobs.shape
-    assert sigma_obs.shape == (nobs, nband), 'size mismatch between `Aobs` and `sigma_obs`'
+    assert cov_obs.shape == (nobs, nband, nband), 'size mismatch between `Aobs` and `cov_obs`'
 
     A_mu = np.mean(Aobs, axis=0)
     sigma_A = np.std(Aobs, axis=0)
-
-    cov_obs = np.zeros((nobs, nband, nband))
-    j,k = np.diag_indices(nband)
-    cov_obs[:,j,k] = np.square(sigma_obs)
 
     if f_bg is None:
         f_bg = numpyro.sample('f_bg', dist.Uniform())
@@ -235,30 +249,20 @@ def edge_model(Aobs, sigma_obs, e_center_mu=0.0, e_center_sigma=1.0, c_mu=None, 
     e_centered = numpyro.deterministic('e_centered', e_center_mu + e_center_sigma*e_unit)
     e = numpyro.deterministic('e', e_centered + jnp.dot(c, c_center))
 
-    mu_fg_unit = numpyro.sample('mu_fg_unit', dist.Normal(loc=0, scale=1), sample_shape=(nband,))
-    mu_fg = numpyro.deterministic('mu_fg', mu_fg_unit*sigma_A + A_mu)
-    scale_fg_unit = numpyro.sample('scale_fg_unit', dist.HalfNormal(scale=1), sample_shape=(nband,))
-    scale_fg = numpyro.deterministic('scale_fg', scale_fg_unit*sigma_A)
-    corr_fg_cholesky = numpyro.sample('corr_fg_cholesky', dist.LKJCholesky(nband, 3))
-    cov_fg_cholesky = numpyro.deterministic('cov_fg_cholesky', scale_fg[:,None]*corr_fg_cholesky)
-    cov_fg = numpyro.deterministic('cov_fg', jnp.matmul(cov_fg_cholesky, cov_fg_cholesky.T))
+    mu_fg, _ = mean_sample('fg', A_mu, sigma_A)
+    cov_fg, _, _, _, _ = covariance_sample('fg', sigma_A, nu_lkj)
 
     if mu_bg is None and cov_bg is None:
-        mu_bg_unit = numpyro.sample('mu_bg_offset', dist.Normal(loc=0, scale=1), sample_shape=(nband,))
-        mu_bg = numpyro.deterministic('mu_bg', mu_bg_unit*sigma_A + A_mu)
-        scale_bg_unit = numpyro.sample('scale_bg_unit', dist.HalfNormal(scale=1), sample_shape=(nband,))
-        scale_bg = numpyro.deterministic('scale_bg', scale_bg_unit*sigma_A)
-        corr_bg_cholesky = numpyro.sample('corr_bg_cholesky', dist.LKJCholesky(nband, 3))
-        cov_bg_cholesky = numpyro.deterministic('cov_bg_cholesky', scale_bg[:,None]*corr_bg_cholesky)
-        cov_bg = numpyro.deterministic('cov_bg', jnp.matmul(cov_bg_cholesky, cov_bg_cholesky.T))
+        mu_bg, _ = mean_sample('bg', A_mu, sigma_A)
+        cov_bg, _, _, _, _ = covariance_sample('bg', sigma_A, nu_lkj)
     elif mu_bg is None or cov_bg is None:
         raise ValueError('either both `mu_bg` and `cov_bg` must be `None` or neither can be `None`')
 
     mu_e = jnp.dot(w, mu_fg)
     e_obs = jnp.dot(Aobs, w)
-    sigma_e2 = jnp.dot(w, jnp.dot(cov_fg, w))
+    sigma_e2 = jnp.sum(w[:,None]*cov_fg*w[None,:])
     sigma_e = jnp.sqrt(sigma_e2)
-    sigma_e_obs2 = jnp.sum(w[None,:]*w[None,:]*sigma_obs*sigma_obs, axis=1)
+    sigma_e_obs2 = jnp.sum(w[None,:,None]*w[None,None,:]*cov_obs, axis=(1, 2))
     sigma_e_obs = jnp.sqrt(sigma_e_obs2)
 
     log_alpha = numpyro.deterministic('log_alpha', log_edge_normalization_factor(e, mu_e, sigma_e, e_obs, sigma_e_obs))
